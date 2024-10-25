@@ -8,7 +8,7 @@ import hashlib
 from datetime import datetime, timedelta
 
 # Configurando o logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(filename='log.log', filemode='a', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Fila de clientes aguardando permissão
 client_queue = queue.Queue()
