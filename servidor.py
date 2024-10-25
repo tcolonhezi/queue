@@ -5,6 +5,7 @@ import sys
 import time
 import logging
 import hashlib
+from datetime import datetime, timedelta
 
 # Configurando o logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -13,6 +14,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 client_queue = queue.Queue()
 # Flag para controlar a execução do servidor
 server_running = True
+
+# Lock e Condition para sincronização de clientes
+client_condition = threading.Condition()
 
 def verify_md5(received_hash, file_path):
     hash_md5 = hashlib.md5()
@@ -26,7 +30,7 @@ def receive_with_length(conn):
     if not length_bytes:
         logging.error("Conexão fechada antes de receber o comprimento.")
         return None
-    
+
     length = int.from_bytes(length_bytes, 'big')
     data = b''
     
@@ -42,19 +46,22 @@ def receive_with_length(conn):
 
 def handle_client(conn, addr):
     global server_running
+
     if not server_running:
         conn.close()
         return
 
     logging.info(f"Cliente {addr} conectado. Adicionando à fila...")
-    client_queue.put((conn, addr))
 
-    while server_running and client_queue.queue[0][1] != addr:
-        time.sleep(0.1)
+    with client_condition:
+        # Adiciona o cliente à fila e aguarda sua vez
+        client_queue.put((conn, addr))
+        while server_running and client_queue.queue[0][1] != addr:
+            client_condition.wait()  # Aguarda notificação para continuar
 
-    if server_running:
-        conn.send(b'PERMITIDO')
-        logging.info(f"Permissão concedida para o cliente {addr} iniciar a transferência")
+        if server_running:
+            conn.send(b'PERMITIDO')
+            logging.info(f"Permissão concedida para o cliente {addr} iniciar a transferência")
 
     try:
         confirmation = conn.recv(1024)
@@ -75,7 +82,9 @@ def handle_client(conn, addr):
     except socket.error:
         logging.error(f"Erro de comunicação com o cliente {addr}")
     finally:
-        client_queue.get()
+        with client_condition:
+            client_queue.get()  # Remove o cliente da fila
+            client_condition.notify_all()  # Notifica os próximos clientes
         conn.close()
 
 def start_server():
@@ -84,6 +93,19 @@ def start_server():
     server.bind(('0.0.0.0', 5000))
     server.listen()
     logging.info("Servidor aguardando conexões...")
+
+    while server_running:
+        try:
+            server.settimeout(1.0)
+            conn, addr = server.accept()
+            threading.Thread(target=handle_client, args=(conn, addr)).start()
+        except socket.timeout:
+            continue
+        except Exception as e:
+            logging.error(f"Erro ao aceitar conexão: {e}")
+
+    server.close()
+    logging.info("Servidor encerrado.")
 
     while server_running:
         try:
